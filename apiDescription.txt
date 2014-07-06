@@ -14,7 +14,7 @@ Commands:
 			Reverse, if 1, will stop the motion of the planets and then reverse them before
 			starting towards the alignment.
 		Example:
-			!A,00,0A,0D,5E,6F,72,3D,A5.
+			!A,00,0A,0D,5E,6F,72,3D,A5,F3.
 		Returns:
 			!a,time,alignmentUniqueId. (ex: !T,01D4,0006.)
 			Time is a 4-hex(2 byte) number in minutes. Expected values are probably from 0 to 1500 or so.
@@ -26,7 +26,7 @@ Commands:
 		Format:
 			Same as A
 		Example command:
-			!E,00,0A,0D,5E,6F,72,3D,A5. 
+			!E,00,0A,0D,5E,6F,72,3D,A5,F3. 
 		Returns:
 			!e,time. (ex: !T,01D4.)
 			Time is a 4-hex(2 byte) number in minutes. Expected values are probably from 0 to 1500 or so.
@@ -76,6 +76,22 @@ Commands:
 				00: in between
 				01: fully engaged
 				04: fully disengaged
+	H: (probably only used from a terminal on a laptop)
+		Function:
+			Shift the orietntation of the home angle (what 0 means when you send an alignment). 
+			Saves in EEPROM, so is a persistant change.
+		Format:
+			!H,direction,angle.
+			Direction: 
+				0: Forward, meaning the normal direction rotation of the planets
+				1: Reverse
+			Angle: "degrees" to change(base 256, not 360)
+		Example:
+			!H,00,A4.
+		Returns:
+			!h.
+	
+		
 
 	D: (probably only used from a terminal on a laptop)
 		Function:
