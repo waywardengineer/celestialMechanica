@@ -1,0 +1,93 @@
+Commands formatted like !command,data1,data2,...dataN. Command is a single uppercase letter, and data is a series of 
+hex numbers that are usually 2 digits long but can be more for certain commands. Responses are formatted like commands, 
+but are lowercase letters
+
+Commands:
+	A:
+		Function:
+			Add a planetary alignment to the list of future alignments that will happen.
+			Returns an estimate of how many minutes it will take to go to that alignment, incclusive of 
+			the time it will take to do all the alignments that are ahead of it in line
+		Format:
+			!E,reverse,mercuryAngle,venusAngle,...neptuneAngle
+			Angles are from 0 to 255
+			Reverse, if 1, will stop the motion of the planets and then reverse them before
+			starting towards the alignment.
+		Example:
+			!A,00,0A,0D,5E,6F,72,3D,A5.
+		Returns:
+			!a,time,alignmentUniqueId. (ex: !T,01D4,0006.)
+			Time is a 4-hex(2 byte) number in minutes. Expected values are probably from 0 to 1500 or so.
+			UniqueId is a 4-hex number(Alignments are stored in EEPROM so we don't lose them on powercycling,
+			so we will probably just increment the ID every time one is added.
+	E:
+		Function:
+			Estimate time required to go to planetary alignment, but don't actually do it
+		Format:
+			Same as A
+		Example command:
+			!E,00,0A,0D,5E,6F,72,3D,A5. 
+		Returns:
+			!e,time. (ex: !T,01D4.)
+			Time is a 4-hex(2 byte) number in minutes. Expected values are probably from 0 to 1500 or so.
+	C:
+		Function:
+			Delete a planetary alignmet from the queue. Note that this will change any time estimate for the alignments that were
+			after the deleted one in the queue.
+		Format:
+			!C,id(4-hex).
+		Example:
+			!C,0006.
+		Returns:
+			!c,result. (ex  !c,01.)
+			Result is 0 or 1 depending on success
+	T:
+		Function:
+			Get a current time estimate for a given alignment id
+		Format:
+			!T,id(4-hex).
+		Example:
+			!T,0006.
+		Returns:
+			!t,time
+			Time is a 4-hex(2 byte) number in minutes. Expected values are probably from 0 to 1500 or so.
+			
+	B:
+		Function:
+			Release or grip the brake on a planet by a notch or fully, or go back to normal operation. Fully gripping 
+			means the planet spins at full speed, fully released means the planet is not connected to the 
+			motor and slows down unless there is wind, something in between means ... something.
+		Format:
+			!B,planetIndex,brakeCode.
+			PlanetIndex starts with Mercury at 0
+			brakeCodes:
+				00: normal operation(program controlling speed of planets)
+				01: Fully engaged(planet at full speed)
+				02: Engage by one "notch"
+				03: Disengage by one "notch"
+				04: Disengage fully
+			Note: We will probably want some implemation in the interface for toggling between code 00 and code 04 for
+			each planet; all other codes can be terminal use only.
+		Example:
+			!B,03,01.
+		Returns:
+			!b,brakeStatus.
+			brakeStatuses:
+				00: in between
+				01: fully engaged
+				04: fully disengaged
+
+	D: (probably only used from a terminal on a laptop)
+		Function:
+			Manually specify the direction of rotation. Doing this will put any pending alignments in queue on hold.
+		Format:
+			!D,directionCode.
+			DirectionCodes:
+				00 normal, determined by alignments in queue or forward if none in queue
+				01 forward
+				02 reverse
+		Example:
+			!D,01.
+		Returns:
+			!d.
+			
