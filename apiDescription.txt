@@ -76,22 +76,31 @@ Commands:
 				00: in between
 				01: fully engaged
 				04: fully disengaged
-	H: (probably only used from a terminal on a laptop)
+
+	S: (probably only used from a terminal on a laptop)
 		Function:
 			Shift the orietntation of the home angle (what 0 means when you send an alignment). 
 			Saves in EEPROM, so is a persistant change.
 		Format:
-			!H,direction,angle.
+			!S,direction,angle.
 			Direction: 
 				0: Forward, meaning the normal direction rotation of the planets
 				1: Reverse
 			Angle: "degrees" to change(base 256, not 360)
 		Example:
-			!H,00,A4.
+			!S,00,A4.
+		Returns:
+			!s.
+
+	H: (probably only used from a terminal on a laptop)
+		Function:
+			Sets the current alignment of the planets as the home position. Would be done after
+			setting the sculpture and manually moving all the planets into the same line, facing the direction
+			you want to be "home". Saves the positions in EEPROM.
+		Format:
+			!H.
 		Returns:
 			!h.
-	
-		
 
 	D: (probably only used from a terminal on a laptop)
 		Function:
