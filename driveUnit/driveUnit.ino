@@ -15,7 +15,9 @@ int targetPlanetSpeeds[8]; //target speeds of planets, stay fixed per alignment 
 const int maxPlanetSpeeds[8]; //max as determined by gearing
 int estimatedActuatorPositions[8]; //how many "steps"(really just on pulses of a given duration) out are we from brake fully engaged
 int estimatedActuatorStepsInRange[8]; //how many "steps" are there in full range of actuator
-int expectedChangeInSpeed[8][5][4]; //estimated effectiveness of releasing the brake by planet, section of actuator steps range, quadrant of orbit
+int expectedChangeInSpeed[8][5][4]; //estimated effectiveness of releasing the brake by planet, section of actuator steps range, quadrant of orbit(to try to compensate for wind)
+unsigned long estimatedAlignmentTimePoints[10];
+uint8_t alignmentQueue[10][8];
 
 void engageBrake(planetIndex){
 	//put the brake to the out limit and reset estimatedActuatorPositions
@@ -26,6 +28,17 @@ void disengageBrake(planetIndex){
 
 
 void addActuatorChangeToQueue(uint8_t changeDirection, uint8_t planetIndex){
+
+}
+
+int estimateTimeToPosition(uint8_t planetIndex, uint8_t angle){
+
+}
+int estimateTimeToAlignment(uint8_t angles[8]){
+
+}
+
+void addAlignmentToQueue(uint8_t angles[8]){
 
 }
 
