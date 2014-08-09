@@ -6,23 +6,79 @@ const uint8_t oActuatorRelayPins[8] = {14, 15, 16, 17, 22, 23, 24, 25};
 const uint8_t oActuatorReverseRelayPins[2] = {18, 26};
 const uint8_t oSpareRelayPins[6] = {19, 20, 21, 27, 28, 29};
 const uint8_t oIndicatorLedPins[4] = {32, 33, 34, 35};
-const uint8_t iMotorPhotoSensorPins = {51, 52};
+const uint8_t iMotorPhotoSensorPins[2] = {51, 52};
 
+// speed stuff is in encoder ticks/1000 secs
+const int maxOrbitSpeeds[8] = {11748, 4628, 2813, 1562, 632, 249, 90, 45};
+const uint8_t totalEncoderSteps[8] = {59, 59, 59, 59, 149, 149, 149, 149};
+const uint8_t totalEncoderRotations[8] = {3, 3, 3, 3, 4, 4, 4, 4};
 
-// speed stuff in encoder ticks/10 mins. or something, we'll see
-int planetSpeeds[8][3]; //average speeds grouped by planet and short, medium, and long terms
-int targetPlanetSpeeds[8]; //target speeds of planets, stay fixed per alignment target
-const int maxPlanetSpeeds[8]; //max as determined by gearing
-int estimatedActuatorPositions[8]; //how many "steps"(really just on pulses of a given duration) out are we from brake fully engaged
-int estimatedActuatorStepsInRange[8]; //how many "steps" are there in full range of actuator
-int expectedChangeInSpeed[8][5][4]; //estimated effectiveness of releasing the brake by planet, section of actuator steps range, quadrant of orbit(to try to compensate for wind)
+typedef struct {
+	uint8_t currentState;
+	uint8_t lastState;
+	bool isMoving;
+	bool isMovingInReverse;
+	bool invertDirectionSense;
+} Encoder;
+typedef struct {
+	uint8_t currentlyActiveActuator; //1-indexed
+	unsigned long actuatorTimeOut;
+	uint8_t movementQueue[20][2]; //{{actuator1, direction1}, {actuator2, direction2}, ...}
+} ActuatorGroup;
+typedef struct {
+	int averageSpeeds[3]; //average speeds grouped by short, medium, and long terms
+	int targetSpeed; //target speed of planets, stays fixed per alignment target
+	int maxSpeed; //max as determined by gearing
+	int estimatedActuatorPositions; //how many "steps"(really just on pulses of a given duration) out are we from brake fully engaged
+	int estimatedActuatorStepsInRange; //how many "steps" are there in full range of actuator
+	int expectedChangeInSpeed[5]; //estimated effectiveness of releasing the brake by section of actuator steps range
+	bool compensateForWind;
+	uint8_t currentEncoderSteps;
+	uint8_t currentEncoderRotations;
+	uint8_t totalEncoderSteps;
+	uint8_t totalEncoderRotations;
+	Encoder encoder;
+} Planet;
+
+Planet planets[8];
+Encoder encoders[9];
+ActuatorGroup actuatorgroups[2];
+
 unsigned long estimatedAlignmentTimePoints[10];
 uint8_t alignmentQueue[10][8];
+int relativeEffectivenessFactors[8]; //how effective is releasing the brake per 8th orbit rotation; i think we will try to keep this summed up to 0
 
-void engageBrake(planetIndex){
-	//put the brake to the out limit and reset estimatedActuatorPositions
+void setup(){
+	for (uint8_t i=0; i<8; i++){
+		planets[i].averageSpeeds[0] = maxOrbitSpeeds[i];
+		planets[i].averageSpeeds[1] = maxOrbitSpeeds[i];
+		planets[i].averageSpeeds[2] = maxOrbitSpeeds[i];
+		planets[i].targetSpeed = maxOrbitSpeeds[i];
+		planets[i].maxSpeed = maxOrbitSpeeds[i];
+		planets[i].estimatedActuatorPositions = 0;
+		planets[i].estimatedActuatorStepsInRange = 0;
+		//planets[i].expectedChangeInSpeed[5]//load from eeprom
+		planets[i].compensateForWind = i > 3;
+		//planets[i].currentEncoderSteps //load from eeprom
+		//planets[i].currentEncoderRotations//load from eeprom
+		planets[i].totalEncoderSteps = totalEncoderSteps[i];
+		planets[i].totalEncoderRotations = totalEncoderRotations[i];
+		planets[i].encoder = encoders[i];
+	}
+
+
 }
-void disengageBrake(planetIndex){
+
+void loop(){
+
+}
+
+
+void engageBrake(uint8_t planetIndex){
+	//put the brake to the out limit and reset estimatedActuatorPositions
+	
+}
+void disengageBrake(uint8_t planetIndex){
 	//pull the brake in till release, and if starting from engages note the number of steps
 }
 
@@ -42,6 +98,15 @@ void addAlignmentToQueue(uint8_t angles[8]){
 
 }
 
+void setZeroPositions(){
+
+}
+
+void savePositionsToEeprom(){
+
+}
+
+
 void doActuatorChanges(){
 	// check if any actuators are ready to turn off, turn on next one, 
 	//and remove the change request from the queue. Only one actator per group of 4 can be on at a time.
@@ -49,8 +114,17 @@ void doActuatorChanges(){
 }
 
 int checkSpeedOfPlanet(uint8_t groupIndex, uint8_t planetIndex, int result[3]){
-	//read sensors and determine average speed at short, (maybe)medium, and long intervals. write to planetSpeeds.
+	//call readencoders and determine average speed at short, (maybe)medium, and long intervals. write to planetSpeeds.
 }
+
+
+
+void readEncoders(){
+
+}
+
+
+
 
 uint8_t checkSerial(char result[5]) {
 	uint8_t bufferCount = 0;
