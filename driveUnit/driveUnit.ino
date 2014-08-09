@@ -1,4 +1,6 @@
-char commandBuffer[5];
+
+
+//pins
 const uint8_t iInnerPhotoSensorAnalogPins[8] = {0, 1, 2, 3, 4, 5, 6, 7};
 const uint8_t iOuterPhotoSensorAnalogPins[8] = {8, 9, 10, 11, 12, 13, 14, 15};
 const uint8_t iActuatorLimitsPins[8] = {3, 4, 5, 6, 7, 8, 9, 10};
@@ -8,7 +10,7 @@ const uint8_t oSpareRelayPins[6] = {19, 20, 21, 27, 28, 29};
 const uint8_t oIndicatorLedPins[4] = {32, 33, 34, 35};
 const uint8_t iMotorPhotoSensorPins[2] = {51, 52};
 
-// speed stuff is in encoder ticks/1000 secs
+// Physically defined stuff like gear ratios; speed stuff is in encoder ticks/1000 secs
 const int maxOrbitSpeeds[8] = {11748, 4628, 2813, 1562, 632, 249, 90, 45};
 const uint8_t totalEncoderSteps[8] = {59, 59, 59, 59, 149, 149, 149, 149};
 const uint8_t totalEncoderRotations[8] = {3, 3, 3, 3, 4, 4, 4, 4};
@@ -16,15 +18,19 @@ const uint8_t totalEncoderRotations[8] = {3, 3, 3, 3, 4, 4, 4, 4};
 typedef struct {
 	uint8_t currentState;
 	uint8_t lastState;
+	uint8_t outerSensorPin;
+	uint8_t innerSensorPin;
 	bool isMoving;
 	bool isMovingInReverse;
 	bool invertDirectionSense;
 } Encoder;
+
 typedef struct {
 	uint8_t currentlyActiveActuator; //1-indexed
 	unsigned long actuatorTimeOut;
 	uint8_t movementQueue[20][2]; //{{actuator1, direction1}, {actuator2, direction2}, ...}
 } ActuatorGroup;
+
 typedef struct {
 	int averageSpeeds[3]; //average speeds grouped by short, medium, and long terms
 	int targetSpeed; //target speed of planets, stays fixed per alignment target
@@ -46,7 +52,8 @@ ActuatorGroup actuatorgroups[2];
 
 unsigned long estimatedAlignmentTimePoints[10];
 uint8_t alignmentQueue[10][8];
-int relativeEffectivenessFactors[8]; //how effective is releasing the brake per 8th orbit rotation; i think we will try to keep this summed up to 0
+int relativeEffectivenessFactors[8]; //For wind compenstion; how effective is releasing the brake per 8th orbit rotation; i think we will try to keep this summed up to 0
+char commandBuffer[5];
 
 void setup(){
 	for (uint8_t i=0; i<8; i++){
@@ -65,8 +72,6 @@ void setup(){
 		planets[i].totalEncoderRotations = totalEncoderRotations[i];
 		planets[i].encoder = encoders[i];
 	}
-
-
 }
 
 void loop(){
@@ -122,9 +127,6 @@ int checkSpeedOfPlanet(uint8_t groupIndex, uint8_t planetIndex, int result[3]){
 void readEncoders(){
 
 }
-
-
-
 
 uint8_t checkSerial(char result[5]) {
 	uint8_t bufferCount = 0;
