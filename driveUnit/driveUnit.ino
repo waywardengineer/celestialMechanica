@@ -23,6 +23,7 @@ const uint8_t divisionsInEncoderRange = 5;
 const int actuatorStepTime = 500;
 const int actuatorOffTime = 100;
 const int photosensorOffThreshold = 300;
+const int speedIntervalDivisionsPerOrbit[8] = {6, 10, 10, 10, 50, 50, 50, 80};
 
 typedef struct {
 	uint8_t currentState;
@@ -44,6 +45,9 @@ typedef struct {
 } ActuatorGroup;
 
 typedef struct {
+	int encoderTicksPerTimeInterval[10];
+	int encoderSpeedMeasurementInterval;
+	unsigned long encoderMeasurementIntervalRolloverTime;
 	int averageSpeeds[3]; //average speeds grouped by short, medium, and long terms
 	int targetSpeed; //target speed of planets, stays fixed per alignment target
 	int maxSpeed; //max as determined by gearing
@@ -58,6 +62,7 @@ typedef struct {
 	ActuatorGroup actuatorGroup;
 	uint8_t actuatorRunningPin;
 	uint8_t actuatorRelayPin;
+	uint8_t homeOffset;
 	Encoder encoder;
 } Planet;
 
@@ -70,12 +75,14 @@ uint8_t alignmentQueue[10][8];
 int relativeEffectivenessFactors[8]; //For wind compenstion; how effective is releasing the brake per 8th orbit rotation; i think we will try to keep this summed up to 0
 char commandBuffer[5];
 unsigned long currentTime;
+bool learningHomePosition = false;
 
 void setup(){
+	currentTime = millis();
 	for (uint8_t i=0; i<8; i++){
-		planets[i].averageSpeeds[0] = maxOrbitSpeeds[i];
-		planets[i].averageSpeeds[1] = maxOrbitSpeeds[i];
-		planets[i].averageSpeeds[2] = maxOrbitSpeeds[i];
+		unsigned long measurementIntervalx100 = 10000 / (speedIntervalDivisionsPerOrbit[i] * maxOrbitSpeeds[i]);
+		planets[i].encoderSpeedMeasurementInterval = measurementIntervalx100 / 100;
+		planets[i].encoderMeasurementIntervalRolloverTime = currentTime;
 		planets[i].targetSpeed = maxOrbitSpeeds[i];
 		planets[i].maxSpeed = maxOrbitSpeeds[i];
 		planets[i].estimatedActuatorPosition = 0;
@@ -105,7 +112,6 @@ void setup(){
 		pinMode(oSpareRelayPins[i], OUTPUT);
 	}
 	loadDataFromEeprom();
-	currentTime = millis();
 }
 
 void loop(){
@@ -119,8 +125,9 @@ void loadDataFromEeprom(){
 		planets[i].currentEncoderSteps = EEPROM.read(i);
 		planets[i].currentEncoderRotations = EEPROM.read(8 + i);
 		planets[i].estimatedActuatorStepsInRange = EEPROM.read(16 + i);
+		planets[i].homeOffset = EEPROM.read(24 + i);
 		for (uint8_t j=0; j<divisionsInEncoderRange; j++){
-			uint8_t address = 24 + i * j * 2;
+			uint8_t address = 32 + i * j * 2;
 			planets[i].expectedChangeInSpeed[j] = getIntFromEeprom(address);
 		}
 	}
@@ -131,8 +138,9 @@ void saveDataToEeprom(){
 		EEPROM.write(i, planets[i].currentEncoderSteps);
 		EEPROM.write(8 + i, planets[i].currentEncoderRotations);
 		EEPROM.write(16 + i, planets[i].estimatedActuatorStepsInRange);
+		EEPROM.write(24 + i, planets[i].homeOffset);
 		for (uint8_t j=0; j<divisionsInEncoderRange; j++){
-			uint8_t address = 24 + i * j * 2;
+			uint8_t address = 32 + i * j * 2;
 			saveIntToEeprom (address, planets[i].expectedChangeInSpeed[j]);
 		}
 	}
@@ -240,9 +248,42 @@ void readEncoders(){
 	for (uint8_t i=0; i<8; i++){
 		uint8_t innerSensor = analogRead(planets[i].encoder.innerSensorPin) > photosensorOffThreshold ? 1 : 0;
 		uint8_t outerSensor = analogRead(planets[i].encoder.outerSensorPin) > photosensorOffThreshold ? 2 : 0;
-		uint8_t sensorState = innerSensor & outerSensor;
-		if (sensorState != planets[i].encoder.currentState){
-			//planets[i].
+		uint8_t newSensorState = innerSensor & outerSensor;
+		if (newSensorState != planets[i].encoder.currentState && !(planets[i].encoder.currentState & newSensorState)){
+			if (newSensorState && planets[i].encoder.currentState){// 01 & 10 or 10 & 01 but not 00 & whatever
+				if (newSensorState == 1){ // inner sensor
+					planets[i].encoder.isMovingInReverse = true;
+				}
+				else if (newSensorState == 2){ // outer sensor
+					planets[i].encoder.isMovingInReverse = false;
+				}
+			}
+			planets[i].encoder.currentState = newSensorState;
+			uint8_t changeIncrement = planets[i].encoder.isMovingInReverse?-1:1;
+			if (newSensorState == 0 && planets[i].encoder.currentState == 3){
+				planets[i].currentEncoderRotations += changeIncrement;
+				if (planets[i].currentEncoderRotations < 0){
+					planets[i].currentEncoderRotations = -((-planets[i].currentEncoderRotations) % planets[i].totalEncoderRotations);
+				}
+				else {
+					planets[i].currentEncoderRotations = planets[i].currentEncoderRotations % planets[i].totalEncoderRotations;
+				}
+				if (learningHomePosition){
+					planets[i].homeOffset = -planets[i].currentEncoderSteps;
+				}
+				planets[i].currentEncoderSteps = 0;
+			}
+			else {
+				planets[i].currentEncoderSteps += changeIncrement;
+			}
+			planets[i].encoderTicksPerTimeInterval[0] += changeIncrement;
+			if (currentTime > planets[i].encoderMeasurementIntervalRolloverTime){
+				for (uint8_t j=9; j>=0; j--){
+					planets[i].encoderTicksPerTimeInterval[j+1] = planets[i].encoderTicksPerTimeInterval[j];
+				}
+				planets[i].encoderTicksPerTimeInterval[0] = 0;
+				planets[i].encoderMeasurementIntervalRolloverTime = currentTime + planets[i].encoderSpeedMeasurementInterval;
+			}
 		}
 	}
 }
