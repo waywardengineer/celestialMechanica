@@ -18,8 +18,11 @@ const int maxOrbitSpeeds[8] = {11748, 4628, 2813, 1562, 632, 249, 90, 45};
 const uint8_t totalEncoderSteps[8] = {59, 59, 59, 59, 149, 149, 149, 149};
 const uint8_t totalEncoderRotations[8] = {3, 3, 3, 3, 4, 4, 4, 4};
 
+// Weirder numbers that may need fiddling with
 const uint8_t divisionsInEncoderRange = 5;
-int actuatorStepTime = 500;
+const int actuatorStepTime = 500;
+const int actuatorOffTime = 100;
+const int photosensorOffThreshold = 300;
 
 typedef struct {
 	uint8_t currentState;
@@ -107,6 +110,8 @@ void setup(){
 
 void loop(){
 	currentTime = millis();
+	checkAndUpdateActuators();
+	
 }
 
 void loadDataFromEeprom(){
@@ -151,7 +156,7 @@ void startActuatorMove(char moveData[2]){
 	}
 }
 
-void checkAndStopActuators(){
+void checkAndUpdateActuators(){
 	for (int i=0; i<2; i++){
 		bool stopActuator = false;
 		uint8_t planetIndex;
@@ -171,10 +176,18 @@ void checkAndStopActuators(){
 				}
 			}
 		}
+		else if (actuatorGroups[i].currentlyActiveActuator == -2){
+			if (currentTime > actuatorGroups[i].actuatorTimeOut){
+				actuatorGroups[i].currentlyActiveActuator = -1;
+			}
+		}
 		if (stopActuator){
-			actuatorGroups[i].currentlyActiveActuator = -1;
+			actuatorGroups[i].currentlyActiveActuator = -2;
+			actuatorGroups[i].actuatorTimeOut = currentTime + actuatorOffTime; //an attemp to make actuator on times into a more measurable set of steps
 			digitalWrite(planets[planetIndex].actuatorRelayPin, LOW);
 			digitalWrite(actuatorGroups[i].reverseRelayPin, LOW);
+		}
+		if (actuatorGroups[i].currentlyActiveActuator == -1){
 			doNextActuatorMoveInQueue(i);
 		}
 	}
@@ -192,8 +205,10 @@ void doNextActuatorMoveInQueue(uint8_t actuatorGroupIndex){
 	}
 }
 
-void addActuatorChangeToQueue(uint8_t changeDirection, uint8_t planetIndex){
-
+void addActuatorChangeToQueue(char changeDirection, char planetIndex){
+	uint8_t queueDepth = planets[planetIndex].actuatorGroup.queueDepth++;
+	planets[planetIndex].actuatorGroup.movementQueue[queueDepth][0] = planetIndex;
+	planets[planetIndex].actuatorGroup.movementQueue[queueDepth][1] = changeDirection;
 }
 
 int estimateTimeToPosition(uint8_t planetIndex, uint8_t angle){
@@ -211,9 +226,6 @@ void setZeroPositions(){
 
 }
 
-void savePositionsToEeprom(){
-
-}
 
 
 
@@ -225,7 +237,14 @@ int checkSpeedOfPlanet(uint8_t groupIndex, uint8_t planetIndex, int result[3]){
 
 
 void readEncoders(){
-
+	for (uint8_t i=0; i<8; i++){
+		uint8_t innerSensor = analogRead(planets[i].encoder.innerSensorPin) > photosensorOffThreshold ? 1 : 0;
+		uint8_t outerSensor = analogRead(planets[i].encoder.outerSensorPin) > photosensorOffThreshold ? 2 : 0;
+		uint8_t sensorState = innerSensor & outerSensor;
+		if (sensorState != planets[i].encoder.currentState){
+			//planets[i].
+		}
+	}
 }
 
 
