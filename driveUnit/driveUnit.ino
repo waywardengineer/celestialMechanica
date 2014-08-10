@@ -1,9 +1,12 @@
+#include <Arduino.h>
+
+#include <EEPROM.h>
 
 
 //pins
 const uint8_t iInnerPhotoSensorAnalogPins[8] = {0, 1, 2, 3, 4, 5, 6, 7};
 const uint8_t iOuterPhotoSensorAnalogPins[8] = {8, 9, 10, 11, 12, 13, 14, 15};
-const uint8_t iActuatorLimitsPins[8] = {3, 4, 5, 6, 7, 8, 9, 10};
+const uint8_t iActuatorRunningPins[8] = {3, 4, 5, 6, 7, 8, 9, 10};
 const uint8_t oActuatorRelayPins[8] = {14, 15, 16, 17, 22, 23, 24, 25};
 const uint8_t oActuatorReverseRelayPins[2] = {18, 26};
 const uint8_t oSpareRelayPins[6] = {19, 20, 21, 27, 28, 29};
@@ -14,6 +17,9 @@ const uint8_t iMotorPhotoSensorPins[2] = {51, 52};
 const int maxOrbitSpeeds[8] = {11748, 4628, 2813, 1562, 632, 249, 90, 45};
 const uint8_t totalEncoderSteps[8] = {59, 59, 59, 59, 149, 149, 149, 149};
 const uint8_t totalEncoderRotations[8] = {3, 3, 3, 3, 4, 4, 4, 4};
+
+const uint8_t divisionsInEncoderRange = 5;
+int actuatorStepTime = 500;
 
 typedef struct {
 	uint8_t currentState;
@@ -26,34 +32,41 @@ typedef struct {
 } Encoder;
 
 typedef struct {
-	uint8_t currentlyActiveActuator; //1-indexed
+	char currentlyActiveActuator; 
+	char movementQueue[20][2]; //{{actuator1, direction1}, {actuator2, direction2}, ...}
+	uint8_t reverseRelayPin;
 	unsigned long actuatorTimeOut;
-	uint8_t movementQueue[20][2]; //{{actuator1, direction1}, {actuator2, direction2}, ...}
+	bool inReverse;
+	uint8_t queueDepth;
 } ActuatorGroup;
 
 typedef struct {
 	int averageSpeeds[3]; //average speeds grouped by short, medium, and long terms
 	int targetSpeed; //target speed of planets, stays fixed per alignment target
 	int maxSpeed; //max as determined by gearing
-	int estimatedActuatorPositions; //how many "steps"(really just on pulses of a given duration) out are we from brake fully engaged
-	int estimatedActuatorStepsInRange; //how many "steps" are there in full range of actuator
-	int expectedChangeInSpeed[5]; //estimated effectiveness of releasing the brake by section of actuator steps range
+	int estimatedActuatorPosition; //how many "steps"(really just on pulses of a given duration) out are we from brake fully engaged
+	uint8_t estimatedActuatorStepsInRange; //how many "steps" are there in full range of actuator
+	int expectedChangeInSpeed[divisionsInEncoderRange]; //estimated effectiveness of releasing the brake by section of actuator steps range
 	bool compensateForWind;
 	uint8_t currentEncoderSteps;
 	uint8_t currentEncoderRotations;
 	uint8_t totalEncoderSteps;
 	uint8_t totalEncoderRotations;
+	ActuatorGroup actuatorGroup;
+	uint8_t actuatorRunningPin;
+	uint8_t actuatorRelayPin;
 	Encoder encoder;
 } Planet;
 
 Planet planets[8];
 Encoder encoders[9];
-ActuatorGroup actuatorgroups[2];
+ActuatorGroup actuatorGroups[2];
 
 unsigned long estimatedAlignmentTimePoints[10];
 uint8_t alignmentQueue[10][8];
 int relativeEffectivenessFactors[8]; //For wind compenstion; how effective is releasing the brake per 8th orbit rotation; i think we will try to keep this summed up to 0
 char commandBuffer[5];
+unsigned long currentTime;
 
 void setup(){
 	for (uint8_t i=0; i<8; i++){
@@ -62,31 +75,122 @@ void setup(){
 		planets[i].averageSpeeds[2] = maxOrbitSpeeds[i];
 		planets[i].targetSpeed = maxOrbitSpeeds[i];
 		planets[i].maxSpeed = maxOrbitSpeeds[i];
-		planets[i].estimatedActuatorPositions = 0;
+		planets[i].estimatedActuatorPosition = 0;
 		planets[i].estimatedActuatorStepsInRange = 0;
-		//planets[i].expectedChangeInSpeed[5]//load from eeprom
 		planets[i].compensateForWind = i > 3;
-		//planets[i].currentEncoderSteps //load from eeprom
-		//planets[i].currentEncoderRotations//load from eeprom
 		planets[i].totalEncoderSteps = totalEncoderSteps[i];
 		planets[i].totalEncoderRotations = totalEncoderRotations[i];
 		planets[i].encoder = encoders[i];
+		planets[i].encoder.innerSensorPin = iInnerPhotoSensorAnalogPins[i];
+		planets[i].encoder.outerSensorPin = iOuterPhotoSensorAnalogPins[i];
+		planets[i].actuatorGroup = actuatorGroups[i / 4];
+		planets[i].actuatorRunningPin = iActuatorRunningPins[i];
+		planets[i].actuatorRelayPin = oActuatorRelayPins[i];
+		pinMode(iActuatorRunningPins[i], INPUT);
+		pinMode(oActuatorRelayPins[i], OUTPUT);
 	}
+	for (uint8_t i=0; i < 2; i++){
+		pinMode(oActuatorReverseRelayPins[i], OUTPUT);
+		pinMode(iMotorPhotoSensorPins[i], INPUT);
+		actuatorGroups[i].reverseRelayPin = oActuatorReverseRelayPins[i];
+		actuatorGroups[i].queueDepth = 0;
+	}
+	for (uint8_t i=0; i < 4; i++){
+		pinMode(oIndicatorLedPins[i], OUTPUT);
+	}
+	for (uint8_t i=0; i < 6; i++){
+		pinMode(oSpareRelayPins[i], OUTPUT);
+	}
+	loadDataFromEeprom();
+	currentTime = millis();
 }
 
 void loop(){
+	currentTime = millis();
+}
 
+void loadDataFromEeprom(){
+	for (uint8_t i=0; i<8; i++){
+		planets[i].currentEncoderSteps = EEPROM.read(i);
+		planets[i].currentEncoderRotations = EEPROM.read(8 + i);
+		planets[i].estimatedActuatorStepsInRange = EEPROM.read(16 + i);
+		for (uint8_t j=0; j<divisionsInEncoderRange; j++){
+			uint8_t address = 24 + i * j * 2;
+			planets[i].expectedChangeInSpeed[j] = getIntFromEeprom(address);
+		}
+	}
+}
+
+void saveDataToEeprom(){
+	for (uint8_t i=0; i<8; i++){
+		EEPROM.write(i, planets[i].currentEncoderSteps);
+		EEPROM.write(8 + i, planets[i].currentEncoderRotations);
+		EEPROM.write(16 + i, planets[i].estimatedActuatorStepsInRange);
+		for (uint8_t j=0; j<divisionsInEncoderRange; j++){
+			uint8_t address = 24 + i * j * 2;
+			saveIntToEeprom (address, planets[i].expectedChangeInSpeed[j]);
+		}
+	}
+}
+
+void startActuatorMove(char moveData[2]){
+	char planetIndex = moveData[0];
+	char dir = moveData[1];
+	if (planets[planetIndex].actuatorGroup.currentlyActiveActuator == -1){
+		if (dir < 0){
+			digitalWrite(planets[planetIndex].actuatorGroup.reverseRelayPin, HIGH);
+		}
+		digitalWrite(planets[planetIndex].actuatorRelayPin, HIGH);
+		if (dir == -2 or dir == 2){
+			planets[planetIndex].actuatorGroup.actuatorTimeOut = 0;
+		}
+		else {
+			planets[planetIndex].actuatorGroup.actuatorTimeOut = currentTime + actuatorStepTime;
+		}
+		planets[planetIndex].actuatorGroup.inReverse = dir < 0;
+	}
+}
+
+void checkAndStopActuators(){
+	for (int i=0; i<2; i++){
+		bool stopActuator = false;
+		uint8_t planetIndex;
+		if (actuatorGroups[i].currentlyActiveActuator > -1){
+			planetIndex = actuatorGroups[i].currentlyActiveActuator;
+			if (actuatorGroups[i].actuatorTimeOut > 0 and currentTime >= actuatorGroups[i].actuatorTimeOut){
+				stopActuator = true;
+				planets[planetIndex].estimatedActuatorPosition += actuatorGroups[i].inReverse?-1:1;
+			}
+			if (not digitalRead(planets[actuatorGroups[i].currentlyActiveActuator].actuatorRunningPin)){//limits hit
+				stopActuator = true;
+				if (actuatorGroups[i].inReverse){
+					planets[planetIndex].estimatedActuatorPosition = 0;
+				}
+				else {
+					planets[planetIndex].estimatedActuatorStepsInRange = planets[planetIndex].estimatedActuatorPosition;
+				}
+			}
+		}
+		if (stopActuator){
+			actuatorGroups[i].currentlyActiveActuator = -1;
+			digitalWrite(planets[planetIndex].actuatorRelayPin, LOW);
+			digitalWrite(actuatorGroups[i].reverseRelayPin, LOW);
+			doNextActuatorMoveInQueue(i);
+		}
+	}
 }
 
 
-void engageBrake(uint8_t planetIndex){
-	//put the brake to the out limit and reset estimatedActuatorPositions
-	
+void doNextActuatorMoveInQueue(uint8_t actuatorGroupIndex){
+	if (actuatorGroups[actuatorGroupIndex].queueDepth > 0){
+		for (uint8_t i=0; i<(actuatorGroups[actuatorGroupIndex].queueDepth - 1); i++){
+			actuatorGroups[actuatorGroupIndex].movementQueue[i][0] = actuatorGroups[actuatorGroupIndex].movementQueue[i+1][0];
+			actuatorGroups[actuatorGroupIndex].movementQueue[i][1] = actuatorGroups[actuatorGroupIndex].movementQueue[i+1][1];
+		}
+		actuatorGroups[actuatorGroupIndex].queueDepth--;
+		startActuatorMove(actuatorGroups[actuatorGroupIndex].movementQueue[0]);
+	}
 }
-void disengageBrake(uint8_t planetIndex){
-	//pull the brake in till release, and if starting from engages note the number of steps
-}
-
 
 void addActuatorChangeToQueue(uint8_t changeDirection, uint8_t planetIndex){
 
@@ -112,11 +216,7 @@ void savePositionsToEeprom(){
 }
 
 
-void doActuatorChanges(){
-	// check if any actuators are ready to turn off, turn on next one, 
-	//and remove the change request from the queue. Only one actator per group of 4 can be on at a time.
-	//actuators controlled by pulses of a set length of time
-}
+
 
 int checkSpeedOfPlanet(uint8_t groupIndex, uint8_t planetIndex, int result[3]){
 	//call readencoders and determine average speed at short, (maybe)medium, and long intervals. write to planetSpeeds.
@@ -127,6 +227,22 @@ int checkSpeedOfPlanet(uint8_t groupIndex, uint8_t planetIndex, int result[3]){
 void readEncoders(){
 
 }
+
+
+int getIntFromEeprom(uint8_t address){
+	int result = EEPROM.read(address) << 8;
+	result += EEPROM.read(address + 1);
+	return result;
+}
+
+void saveIntToEeprom(int value, uint8_t address){
+	uint8_t b = value >> 8;
+	EEPROM.write (address, b);
+	address ++;
+	b = value & 0xFF;
+	EEPROM.write (address, b);
+}
+
 
 uint8_t checkSerial(char result[5]) {
 	uint8_t bufferCount = 0;
