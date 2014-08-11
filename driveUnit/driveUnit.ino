@@ -24,6 +24,9 @@ const int actuatorStepTime = 500;
 const int actuatorOffTime = 100;
 const int photosensorOffThreshold = 300;
 const int speedIntervalDivisionsPerOrbit[8] = {6, 10, 10, 10, 50, 50, 50, 80};
+const int motorEncoderMinimumChangeTime = 500;
+const int eepromMinimumSaveInterval = 5000;
+
 
 typedef struct {
 	uint8_t currentState;
@@ -75,7 +78,10 @@ uint8_t alignmentQueue[10][8];
 int relativeEffectivenessFactors[8]; //For wind compenstion; how effective is releasing the brake per 8th orbit rotation; i think we will try to keep this summed up to 0
 char commandBuffer[5];
 unsigned long currentTime;
+unsigned long lastMotorChangeTime;
+unsigned long lastEepromSaveTime;
 bool learningHomePosition = false;
+bool currentDataSavedToEeprom = false;
 
 void setup(){
 	currentTime = millis();
@@ -117,7 +123,8 @@ void setup(){
 void loop(){
 	currentTime = millis();
 	checkAndUpdateActuators();
-	
+	readPlanetEncoders();
+	checkMotorDirectionAndSaveToEepromIfStopped();
 }
 
 void loadDataFromEeprom(){
@@ -242,14 +249,48 @@ int checkSpeedOfPlanet(uint8_t groupIndex, uint8_t planetIndex, int result[3]){
 	//call readencoders and determine average speed at short, (maybe)medium, and long intervals. write to planetSpeeds.
 }
 
+void learnActuatorSteps(){ //blocking function, don't count on accurate remembering of position after this
+	for (uint8_t i=0; i < 8; i++){
+		planets[i].estimatedActuatorStepsInRange = 0;
+		resetActuatorGroup(i/4);
+		addActuatorChangeToQueue(-2, i);
+		while (planets[i].estimatedActuatorPosition > 0){
+			checkAndUpdateActuators();
+		}
+		while (planets[i].estimatedActuatorStepsInRange == 0){
+			if (planets[i].actuatorGroup.queueDepth == 0){
+				addActuatorChangeToQueue(1, i);
+			}
+			checkAndUpdateActuators();
+		}
+		addActuatorChangeToQueue(-2, i);
+		while (planets[i].estimatedActuatorPosition > 0){
+			checkAndUpdateActuators();
+		}
+	}
+}
 
+void resetActuatorGroup(uint8_t actuatorGroupIndex){ //hard reset of actuator movements
+	if (actuatorGroups[actuatorGroupIndex].queueDepth > 0){
+		for (uint8_t i=0; i<(actuatorGroups[actuatorGroupIndex].queueDepth); i++){
+			actuatorGroups[actuatorGroupIndex].movementQueue[i][0] = 0;
+			actuatorGroups[actuatorGroupIndex].movementQueue[i][1] = 0;
+		}
+		actuatorGroups[actuatorGroupIndex].queueDepth = 0;
+	}
+	actuatorGroups[actuatorGroupIndex].currentlyActiveActuator = -1;
+	for (uint8_t i=4*actuatorGroupIndex; i<4+4*actuatorGroupIndex; i++){
+		digitalWrite(oActuatorRelayPins[i], LOW);
+	}
+}
 
-void readEncoders(){
+void readPlanetEncoders(){
 	for (uint8_t i=0; i<8; i++){
 		uint8_t innerSensor = analogRead(planets[i].encoder.innerSensorPin) > photosensorOffThreshold ? 1 : 0;
 		uint8_t outerSensor = analogRead(planets[i].encoder.outerSensorPin) > photosensorOffThreshold ? 2 : 0;
 		uint8_t newSensorState = innerSensor & outerSensor;
-		if (newSensorState != planets[i].encoder.currentState && !(planets[i].encoder.currentState & newSensorState)){
+		if (newSensorState != planets[i].encoder.currentState && !((planets[i].encoder.currentState == 1 || planets[i].encoder.currentState == 2) && newSensorState == 3)){
+			//ignore transitions from one notch to 2 notches; those can only come from misalignment of the sensors
 			if (newSensorState && planets[i].encoder.currentState){// 01 & 10 or 10 & 01 but not 00 & whatever
 				if (newSensorState == 1){ // inner sensor
 					planets[i].encoder.isMovingInReverse = true;
@@ -260,7 +301,7 @@ void readEncoders(){
 			}
 			planets[i].encoder.currentState = newSensorState;
 			uint8_t changeIncrement = planets[i].encoder.isMovingInReverse?-1:1;
-			if (newSensorState == 0 && planets[i].encoder.currentState == 3){
+			if (newSensorState == 0 && planets[i].encoder.currentState == 3){//special notch indicating full rotation
 				planets[i].currentEncoderRotations += changeIncrement;
 				if (planets[i].currentEncoderRotations < 0){
 					planets[i].currentEncoderRotations = -((-planets[i].currentEncoderRotations) % planets[i].totalEncoderRotations);
@@ -284,6 +325,33 @@ void readEncoders(){
 				planets[i].encoderTicksPerTimeInterval[0] = 0;
 				planets[i].encoderMeasurementIntervalRolloverTime = currentTime + planets[i].encoderSpeedMeasurementInterval;
 			}
+		}
+	}
+}
+
+void checkMotorDirectionAndSaveToEepromIfStopped(){
+	uint8_t innerSensor = digitalRead(encoders[8].innerSensorPin) ? 1 : 0;
+	uint8_t outerSensor = digitalRead(encoders[8].outerSensorPin) ? 2 : 0;
+	uint8_t newSensorState = innerSensor & outerSensor;
+	if (newSensorState != encoders[8].currentState){
+		encoders[8].isMoving = true;
+		currentDataSavedToEeprom = false;
+		lastMotorChangeTime = currentTime;
+		if (newSensorState && encoders[8].currentState){// 01 & 10 or 10 & 01 but not 00 & whatever
+			if (newSensorState == 1){ // inner sensor
+				encoders[8].isMovingInReverse = true;
+			}
+			else if (newSensorState == 2){ // outer sensor
+				encoders[8].isMovingInReverse = false;
+			}
+		}
+	}
+	if (currentTime > lastMotorChangeTime + motorEncoderMinimumChangeTime){
+		if (currentTime > lastEepromSaveTime + eepromMinimumSaveInterval){
+			encoders[8].isMoving = false;
+			saveDataToEeprom();
+			currentDataSavedToEeprom = true;
+			lastEepromSaveTime = currentTime;
 		}
 	}
 }
