@@ -26,11 +26,12 @@ const int photosensorOffThreshold = 300;
 const int speedIntervalDivisionsPerOrbit[8] = {6, 10, 10, 10, 50, 50, 50, 80};
 const int motorEncoderMinimumChangeTime = 500;
 const int eepromMinimumSaveInterval = 5000;
-
+const uint8_t speedAverageWeightingFactor = 6;
+const uint8_t maxActuatorChangeQueueDepth = 50;
 
 typedef struct {
 	uint8_t currentState;
-	uint8_t lastState;
+	unsigned long lastChangeTime;
 	uint8_t outerSensorPin;
 	uint8_t innerSensorPin;
 	bool isMoving;
@@ -40,7 +41,7 @@ typedef struct {
 
 typedef struct {
 	char currentlyActiveActuator; 
-	char movementQueue[20][2]; //{{actuator1, direction1}, {actuator2, direction2}, ...}
+	char movementQueue[maxActuatorChangeQueueDepth][2]; //{{actuator1, direction1}, {actuator2, direction2}, ...}
 	uint8_t reverseRelayPin;
 	unsigned long actuatorTimeOut;
 	bool inReverse;
@@ -48,10 +49,8 @@ typedef struct {
 } ActuatorGroup;
 
 typedef struct {
-	int encoderTicksPerTimeInterval[10];
-	int encoderSpeedMeasurementInterval;
-	unsigned long encoderMeasurementIntervalRolloverTime;
-	int averageSpeeds[3]; //average speeds grouped by short, medium, and long terms
+	int instantaneousSpeed;
+	int weightedAverageSpeed;
 	int targetSpeed; //target speed of planets, stays fixed per alignment target
 	int maxSpeed; //max as determined by gearing
 	int estimatedActuatorPosition; //how many "steps"(really just on pulses of a given duration) out are we from brake fully engaged
@@ -67,6 +66,9 @@ typedef struct {
 	uint8_t actuatorRelayPin;
 	uint8_t homeOffset;
 	Encoder encoder;
+	bool actuatorMovePending;
+	char lastActuatorChangeRequested;
+	int speedAtActuatorChangeRequest;
 } Planet;
 
 Planet planets[8];
@@ -87,8 +89,8 @@ void setup(){
 	currentTime = millis();
 	for (uint8_t i=0; i<8; i++){
 		unsigned long measurementIntervalx100 = 10000 / (speedIntervalDivisionsPerOrbit[i] * maxOrbitSpeeds[i]);
-		planets[i].encoderSpeedMeasurementInterval = measurementIntervalx100 / 100;
-		planets[i].encoderMeasurementIntervalRolloverTime = currentTime;
+		planets[i].instantaneousSpeed = maxOrbitSpeeds[i];
+		planets[i].weightedAverageSpeed = maxOrbitSpeeds[i];
 		planets[i].targetSpeed = maxOrbitSpeeds[i];
 		planets[i].maxSpeed = maxOrbitSpeeds[i];
 		planets[i].estimatedActuatorPosition = 0;
@@ -99,9 +101,11 @@ void setup(){
 		planets[i].encoder = encoders[i];
 		planets[i].encoder.innerSensorPin = iInnerPhotoSensorAnalogPins[i];
 		planets[i].encoder.outerSensorPin = iOuterPhotoSensorAnalogPins[i];
+		planets[i].encoder.lastChangeTime = currentTime;
 		planets[i].actuatorGroup = actuatorGroups[i / 4];
 		planets[i].actuatorRunningPin = iActuatorRunningPins[i];
 		planets[i].actuatorRelayPin = oActuatorRelayPins[i];
+		planers[i].actuatorMovePending = false;
 		pinMode(iActuatorRunningPins[i], INPUT);
 		pinMode(oActuatorRelayPins[i], OUTPUT);
 	}
@@ -201,6 +205,12 @@ void checkAndUpdateActuators(){
 			actuatorGroups[i].actuatorTimeOut = currentTime + actuatorOffTime; //an attemp to make actuator on times into a more measurable set of steps
 			digitalWrite(planets[planetIndex].actuatorRelayPin, LOW);
 			digitalWrite(actuatorGroups[i].reverseRelayPin, LOW);
+			planets[planetIndex].actuatorMovePending = false;
+			for (uint8_t j=1; j<actuatorGroups[i].queueDepth; j++){
+				if (actuatorGroups[i].movementQueue[j][0] == planetIndex){
+					planets[planetIndex].actuatorMovePending = true;
+				}
+			}
 		}
 		if (actuatorGroups[i].currentlyActiveActuator == -1){
 			doNextActuatorMoveInQueue(i);
@@ -221,9 +231,11 @@ void doNextActuatorMoveInQueue(uint8_t actuatorGroupIndex){
 }
 
 void addActuatorChangeToQueue(char changeDirection, char planetIndex){
-	uint8_t queueDepth = planets[planetIndex].actuatorGroup.queueDepth++;
-	planets[planetIndex].actuatorGroup.movementQueue[queueDepth][0] = planetIndex;
-	planets[planetIndex].actuatorGroup.movementQueue[queueDepth][1] = changeDirection;
+	if (planets[planetIndex].actuatorGroup.queueDepth < maxActuatorChangeQueueDepth){
+		uint8_t queueDepth = planets[planetIndex].actuatorGroup.queueDepth++;
+		planets[planetIndex].actuatorGroup.movementQueue[queueDepth][0] = planetIndex;
+		planets[planetIndex].actuatorGroup.movementQueue[queueDepth][1] = changeDirection;
+	}
 }
 
 int estimateTimeToPosition(uint8_t planetIndex, uint8_t angle){
@@ -242,11 +254,37 @@ void setZeroPositions(){
 }
 
 
+void setTargetSpeeds(){
+
+}
 
 
+void adjustPlanetSpeeds(){
+	for (uint8_t i=0; i<8; i++){
+		if (planets[i].targetSpeed < planets[i].maxSpeed){
+			if (! planets[i].actuatorMovePending){
+				long differencePercent = ((planets[i].weightedAverageSpeed - planets[i].targetSpeed) * 100) / planets[i].targetSpeed;
+				if (abs(differencePercent) > 10){
+					int stepsToDo = abs(differencePercent) / planets[i].expectedChangeInSpeed[expectedChangeInSpeedIndex]
+					char changeDirection = differencePrecent > 0 ? 1 : -1;
+					for (uint8_t j=0; j < stepsToDo; j++){
+						addActuatorChangeToQueue(changeDirection, i);
+					}
+					planets[i].lastActuatorChangeRequested = changeDirection * stepsToDo;
+					planets[i].speedAtActuatorChangeRequest = planets[i].instantaneousSpeed;
+					planets[i].targetSpeedAtActuatorChangeRequest = planets[i].targetSpeed;
+				}
+			}
+		}
+	}
+}
 
-int checkSpeedOfPlanet(uint8_t groupIndex, uint8_t planetIndex, int result[3]){
-	//call readencoders and determine average speed at short, (maybe)medium, and long intervals. write to planetSpeeds.
+void adjustExpectedChangesInSpeed(uint8_t planetIndex){
+	int expectedChangeInSpeedIndex = planets[i].estimatedActuatorPosition * divisionsInEncoderRange / planets[i].estimatedActuatorStepsInRange;
+	planets[i].expectedChangeInSpeed[expectedChangeInSpeedIndex] = (planets[i].expectedChangeInSpeed[expectedChangeInSpeedIndex] * expectedChangeInSpeedWeightingFactor + 
+		(planets[i].targetSpeedAtActuatorChangeRequest - planets[i].speedAtActuatorChangeRequest) / (planets[i].targetSpeedAtActuatorChangeRequest - planets[i].instantaneousSpeed)) / 
+		(expectedChangeInSpeedWeightingFactor + 1);
+
 }
 
 void learnActuatorSteps(){ //blocking function, don't count on accurate remembering of position after this
@@ -300,9 +338,9 @@ void readPlanetEncoders(){
 				}
 			}
 			planets[i].encoder.currentState = newSensorState;
-			uint8_t changeIncrement = planets[i].encoder.isMovingInReverse?-1:1;
+			uint8_t directionFactor = planets[i].encoder.isMovingInReverse?-1:1;			
 			if (newSensorState == 0 && planets[i].encoder.currentState == 3){//special notch indicating full rotation
-				planets[i].currentEncoderRotations += changeIncrement;
+				planets[i].currentEncoderRotations += directionFactor;
 				if (planets[i].currentEncoderRotations < 0){
 					planets[i].currentEncoderRotations = -((-planets[i].currentEncoderRotations) % planets[i].totalEncoderRotations);
 				}
@@ -314,16 +352,16 @@ void readPlanetEncoders(){
 				}
 				planets[i].currentEncoderSteps = 0;
 			}
-			else {
-				planets[i].currentEncoderSteps += changeIncrement;
-			}
-			planets[i].encoderTicksPerTimeInterval[0] += changeIncrement;
-			if (currentTime > planets[i].encoderMeasurementIntervalRolloverTime){
-				for (uint8_t j=9; j>=0; j--){
-					planets[i].encoderTicksPerTimeInterval[j+1] = planets[i].encoderTicksPerTimeInterval[j];
-				}
-				planets[i].encoderTicksPerTimeInterval[0] = 0;
-				planets[i].encoderMeasurementIntervalRolloverTime = currentTime + planets[i].encoderSpeedMeasurementInterval;
+			else { //normal notch, only measure speed on these because spacing is irregular on the special notch
+				unsigned long timeSinceLastChange = currentTime - planets[i].lastChangeTime
+				planets[i].lastChangeTime = currentTime
+				unsigned long instantaneousSpeed = 1000000 / timeSinceLastChange;
+				instantaneousSpeed = instantaneousSpeed > 65535?65535:instantaneousSpeed; //should never exceed this but good to check before putting this into an int
+				instantaneousSpeed *= directionFactor;
+				planets[i].instantaneousSpeed = instantaneousSpeed;
+				unsigned long weightedAverageSpeed = (planets[i].weightedAverageSpeed * speedAverageWeightingFactor + instantaneousSpeed) / (speedAverageWeightingFactor + 1);
+				planets[i].weightedAverageSpeed = weightedAverageSpeed;
+				planets[i].currentEncoderSteps += directionFactor;
 			}
 		}
 	}
