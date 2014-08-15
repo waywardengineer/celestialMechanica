@@ -1,6 +1,8 @@
 #include <Arduino.h>
 
 #include <EEPROM.h>
+#include <QueueArray.h>
+#include <string.h>
 
 
 //pins
@@ -71,9 +73,12 @@ typedef struct {
 	int speedAtActuatorChangeRequest;
 } Planet;
 
+
+
 Planet planets[8];
 Encoder encoders[9];
 ActuatorGroup actuatorGroups[2];
+
 
 unsigned long estimatedAlignmentTimePoints[10];
 uint8_t alignmentQueue[10][8];
@@ -85,7 +90,20 @@ unsigned long lastEepromSaveTime;
 bool learningHomePosition = false;
 bool currentDataSavedToEeprom = false;
 
+// struct for queued commands
+typedef struct {
+	char opcode;
+	uint8_t argLength;
+	char args[8];
+} Command;
+
+QueueArray<Command> commandQueue;
+
+
+
 void setup(){
+	Serial.begin(9600);
+	// Serial.println("Started.");
 	currentTime = millis();
 	for (uint8_t i=0; i<8; i++){
 		unsigned long measurementIntervalx100 = 10000 / (speedIntervalDivisionsPerOrbit[i] * maxOrbitSpeeds[i]);
@@ -124,11 +142,25 @@ void setup(){
 	loadDataFromEeprom();
 }
 
+void handleCommand(){
+	if (commandQueue.isEmpty()) { return; }
+	// Serial.println("Handling.");
+	Command command = commandQueue.pop();
+	// Do stuff with the command
+
+	// Serial.println(command.opcode);
+	// Serial.println(command.argLength);
+	// for (int i=0; i < command.argLength; i++){ Serial.println(command.args[i]); }
+	// etc.
+}
+
 void loop(){
 	currentTime = millis();
 	checkAndUpdateActuators();
 	readPlanetEncoders();
 	checkMotorDirectionAndSaveToEepromIfStopped();
+	checkSerial();
+	handleCommand();
 }
 
 void loadDataFromEeprom(){
@@ -409,36 +441,76 @@ void saveIntToEeprom(int value, uint8_t address){
 	EEPROM.write (address, b);
 }
 
+void parseAndQueueCommand(char buffer[]) {
+	Serial.println("Parsing.");
+	// Serial.println(buffer);
+	
+	char *saveptr;
+	char *token = strtok_r(buffer, ",", &saveptr);
+	char opcode = *token;
+	Command command;
+	command.opcode = opcode;
+	uint8_t args[9];
+	uint8_t i = 0;
+	for (token = strtok_r(NULL, ",", &saveptr); token; token = strtok_r(NULL, ",", &saveptr) ) {
+		command.args[i++] = *token;
+	}
+	command.argLength = i;
 
-uint8_t checkSerial(char result[5]) {
-	uint8_t bufferCount = 0;
-	uint8_t listeningState = 0;
+	// Push the command onto the queue.
+	commandQueue.push(command);
+}
+
+uint8_t listeningState = 0;
+uint8_t bufferCount = 0;
+char buffer[20];
+
+uint8_t checkSerial() {
 	char incomingByte;
-	char buffer[10];
-	uint8_t resultLength = 0;
+	
 	while (Serial.available() > 0) {
 		incomingByte = Serial.read();
 		if (incomingByte == '!'){
 			listeningState = 1;//listening to command
+			Serial.println("Listening.");
+			bufferCount = 0;
 		}
 		else if (listeningState == 1){
+			// Serial.println(incomingByte);
 			if (incomingByte == '.'){
-				listeningState = 2;
+				listeningState = 2;  // command complete
+
 			}
 			else {
 				buffer[bufferCount++] = incomingByte;
+				Serial.println(buffer);
 			}
 		}
+		else if (listeningState == 2) {
+			Serial.println("Done.");
+			break;
+		} else {
+			// Serial.println(listeningState);
+		}
 	}
-	if (bufferCount > 0){
+	if (listeningState == 2 && bufferCount > 0){
+		/*
 		result[0] = buffer[0]; //the single letter command
 		uint8_t i = 1;
 		resultLength = 1;
 		while (i < bufferCount - 1){ //hex values, will be extedded to dealing with 2 and 3 digit values
 			result[resultLength++] = hexToByte(buffer[i++]);
 		}
+		*/
+
+		// null terminate the string
+		buffer[bufferCount++] = NULL;
+		 
+		parseAndQueueCommand(buffer);
+		bufferCount = 0;
+		listeningState = 0;
 	}
-	return resultLength;
+	return bufferCount;
 }
 
 uint8_t hexToByte(char hi, char lo) {
